@@ -5,13 +5,17 @@ from datetime import datetime
 from difflib import get_close_matches
 
 # ================= CONFIG =================
-st.set_page_config(page_title="VirVentures Enricher", layout="wide")
+st.set_page_config(page_title="VirVentures Data Enricher", layout="wide")
 
 # ================= CSS =================
 st.markdown("""
 <style>
 h1, h2, h3 { color: #f47920; }
-.stButton>button { background-color: #f47920; color: white; border-radius: 8px; }
+.stButton>button {
+    background-color: #f47920;
+    color: white;
+    border-radius: 8px;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -19,34 +23,39 @@ h1, h2, h3 { color: #f47920; }
 if "enriched_df" not in st.session_state:
     st.session_state.enriched_df = None
 
-# ================= UNIVERSAL FILE READER =================
+# ================= UNIVERSAL FILE READER (FIXED) =================
 def universal_file_reader(uploaded_file):
     if uploaded_file is None:
         return None
 
     try:
-        file_bytes = uploaded_file.read()
-        buffer = io.BytesIO(file_bytes)
+        file_bytes = uploaded_file.getvalue()
 
         # Excel attempts
         for engine in ["openpyxl", "xlrd"]:
             try:
-                buffer.seek(0)
-                return pd.read_excel(buffer, engine=engine)
+                buffer = io.BytesIO(file_bytes)
+                df = pd.read_excel(buffer, engine=engine)
+                if df is not None and len(df) > 0:
+                    return df
             except:
                 continue
 
         # CSV fallback
         for enc in ["utf-8", "latin1", "cp1252"]:
             try:
-                buffer.seek(0)
-                return pd.read_csv(buffer, encoding=enc)
+                buffer = io.BytesIO(file_bytes)
+                df = pd.read_csv(buffer, encoding=enc)
+                if df is not None and len(df) > 0:
+                    return df
             except:
                 continue
 
+        st.error(f"❌ Could not parse file: {uploaded_file.name}")
         return None
 
     except:
+        st.error(f"❌ File read error: {uploaded_file.name}")
         return None
 
 
@@ -55,14 +64,11 @@ def clean_value(val):
     try:
         if pd.isna(val):
             return None
-
         v = str(val).strip().lower()
-
         if v in ["", "na", "n/a", "#n/a", "none"]:
             return None
         if v in ["0", "0.0"]:
             return None
-
         return val
     except:
         return None
@@ -75,7 +81,7 @@ STANDARD_MAP = {
     "stock": ["stock", "fulfillable", "available"],
     "reserve": ["reserve", "reserved"],
     "inbound": ["inbound", "incoming"],
-    "brand": ["brand"],
+    "brand": ["brand"]
 }
 
 def auto_map(df):
@@ -83,14 +89,13 @@ def auto_map(df):
         return {}
 
     mapped = {}
-    cols = [c.lower() for c in df.columns]
+    cols = [c.lower().strip() for c in df.columns]
 
     for key, variations in STANDARD_MAP.items():
         for col in cols:
             if col in variations:
                 mapped[key] = col
                 break
-
             match = get_close_matches(col, variations, n=1, cutoff=0.75)
             if match:
                 mapped[key] = col
@@ -102,7 +107,7 @@ def auto_map(df):
 # ================= SKU / ASIN =================
 def extract_sku(row):
     for c in ['INV(A-Z)', 'INV(Z-A)', 'input_Model#', 'SKU']:
-        if c in row:
+        if c in row.index:
             val = clean_value(row[c])
             if val:
                 return str(val)
@@ -110,7 +115,7 @@ def extract_sku(row):
 
 def extract_asin(row):
     for c in ['Output ASIN', 'ASIN', 'asin']:
-        if c in row:
+        if c in row.index:
             val = clean_value(row[c])
             if val:
                 return str(val)
@@ -124,7 +129,6 @@ def enrich_inventory(main_df, inv_df):
 
     inv_map = auto_map(inv_df)
     counts = {"Stock": 0, "Reserve": 0, "Inbound": 0}
-
     lookup = {}
 
     for _, r in inv_df.iterrows():
@@ -184,12 +188,14 @@ def enrich_restrictions(main_df, res_df):
 
 # ================= DERIVED =================
 def calculate(df):
-    if df is None:
+    if df is None or len(df) == 0:
         return df
 
     def num(x):
-        try: return float(x)
-        except: return 0
+        try:
+            return float(x)
+        except:
+            return 0
 
     if "TOTAL(Stock+Reserve+inbound)" in df.columns:
         df["TOTAL(Stock+Reserve+inbound)"] = df.apply(
@@ -204,15 +210,16 @@ def save_history(df):
     if df is None or len(df) == 0:
         return
 
-    df["Processed_Date"] = datetime.now()
+    df_copy = df.copy()
+    df_copy["Processed_Date"] = datetime.now()
 
     try:
         old = pd.read_csv("history.csv")
-        df = pd.concat([old, df])
+        df_copy = pd.concat([old, df_copy])
     except:
         pass
 
-    df.to_csv("history.csv", index=False)
+    df_copy.to_csv("history.csv", index=False)
 
 
 # ================= UI =================
@@ -232,25 +239,26 @@ with c3:
 with c4:
     arch_file = st.file_uploader("Archive")
 
-
 # ================= PROCESS =================
 if st.button("ENRICH"):
 
     if main_file is None:
-        st.error("Upload main file")
+        st.error("❌ Upload main file")
     else:
         prog = st.progress(0)
 
         main_df = universal_file_reader(main_file)
-        prog.progress(0.2)
+        prog.progress(0.3)
 
-        inv_df = universal_file_reader(inv_file) if inv_file else None
-        prog.progress(0.4)
+        inv_df = universal_file_reader(inv_file) if inv_file is not None else None
+        prog.progress(0.5)
 
-        res_df = universal_file_reader(res_file) if res_file else None
-        prog.progress(0.6)
+        res_df = universal_file_reader(res_file) if res_file is not None else None
+        prog.progress(0.7)
 
-        if main_df is not None:
+        if main_df is not None and len(main_df) > 0:
+
+            st.write("✅ Loaded:", main_df.shape)
 
             main_df, stats = enrich_inventory(main_df, inv_df)
             main_df, res_count = enrich_restrictions(main_df, res_df)
@@ -260,35 +268,31 @@ if st.button("ENRICH"):
 
             prog.progress(1.0)
 
-            st.success("Done ✅")
+            st.success("✅ Enrichment complete")
             st.write("Filled:", stats)
             st.write("Restricted:", res_count)
 
             st.session_state.enriched_df = main_df
 
         else:
-            st.error("Main file failed")
-
+            st.error("❌ Main file failed to load")
 
 # ================= DOWNLOAD =================
 if st.session_state.enriched_df is not None:
     output = io.BytesIO()
 
     try:
-        # Try openpyxl
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             st.session_state.enriched_df.to_excel(writer, index=False)
     except:
-        # Fallback to xlsxwriter
         with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
             st.session_state.enriched_df.to_excel(writer, index=False)
 
     st.download_button(
-        "Download Excel",
+        "⬇️ Download Excel",
         data=output.getvalue(),
         file_name=f"enriched_{datetime.now().strftime('%H%M')}.xlsx"
     )
-
 
 # ================= DASHBOARD =================
 st.markdown("---")
@@ -299,13 +303,10 @@ try:
 
     if hist is not None and len(hist) > 0:
         hist["Processed_Date"] = pd.to_datetime(hist["Processed_Date"])
-
         daily = hist.groupby(hist["Processed_Date"].dt.date)["Stock"].sum()
-
         st.line_chart(daily)
-
     else:
-        st.info("No data yet")
+        st.info("No history yet")
 
 except:
-    st.info("Run enrichment to build dashboard")
+    st.info("Run enrichment to generate dashboard")
