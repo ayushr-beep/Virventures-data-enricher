@@ -290,21 +290,25 @@ STANDARD_MAP: dict[str, list[str]] = {
 # UTILITY FUNCTIONS
 # ─────────────────────────────────────────────────────────────────────────────
 
+from typing import Optional
+import numpy as np
+
 def clean_value(val) -> Optional[str]:
-"""
-Returns None if val is considered missing/zero/NA.
-Otherwise returns the stripped string.
-"""
-if val is None:
-return None
-if isinstance(val, float) and (np.isnan(val) or val == 0.0):
-return None
-if isinstance(val, int) and val == 0:
-return None
-s = str(val).strip()
-if s.lower() in MISSING_VALUES:
-return None
-return s
+    """
+    Returns None if val is considered missing/zero/NA.
+    Otherwise returns the stripped string.
+    """
+    if val is None:
+        return None
+    if isinstance(val, float) and (np.isnan(val) or val == 0.0):
+        return None
+    if isinstance(val, int) and val == 0:
+        return None
+    
+    s = str(val).strip()
+    if s.lower() in MISSING_VALUES:
+        return None
+    return s
 
 
 def safe_int(val, default=0) -> int:
