@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import io
-import re
 from datetime import datetime
 
 st.set_page_config(
@@ -34,23 +33,39 @@ if 'enriched_filename' not in st.session_state:
     st.session_state.enriched_filename = None
 
 # =============================================================================
-# FILE LOADER WITH ERROR HANDLING
+# FILE LOADER WITH MULTIPLE ENGINES
 # =============================================================================
 def load_file(uploaded_file):
-    """Safely load Excel or CSV file"""
+    """Safely load Excel or CSV file with multiple engine fallbacks"""
     if uploaded_file is None:
         return None
     
     try:
         if uploaded_file.name.endswith('.csv'):
             return pd.read_csv(uploaded_file)
+        
         elif uploaded_file.name.endswith('.xls'):
-            return pd.read_excel(uploaded_file, engine='xlrd')
-        else:
-            # For .xlsx files
-            return pd.read_excel(uploaded_file, engine='openpyxl')
+            # Try xlrd for old .xls files
+            try:
+                return pd.read_excel(uploaded_file, engine='xlrd')
+            except:
+                return pd.read_excel(uploaded_file)
+        
+        else:  # .xlsx files
+            # Try openpyxl first
+            try:
+                return pd.read_excel(uploaded_file, engine='openpyxl')
+            except:
+                # Fallback: try without specifying engine
+                try:
+                    return pd.read_excel(uploaded_file)
+                except:
+                    # Last resort: read as CSV (if it's actually CSV but named .xlsx)
+                    return pd.read_csv(uploaded_file)
+                    
     except Exception as e:
         st.error(f"Error loading {uploaded_file.name}: {str(e)}")
+        st.info("Tip: Save your Excel file as .xls (older format) or .csv if this error persists.")
         return None
 
 def clean_value(val):
@@ -88,7 +103,7 @@ def enrich_from_inventory_file(main_df, inv_df):
     filled_cols = []
     cells_filled = 0
     
-    if inv_df is None:
+    if inv_df is None or len(inv_df) == 0:
         return main_df, filled_cols, cells_filled
     
     inv_df.columns = [str(c).upper().strip() for c in inv_df.columns]
@@ -124,17 +139,12 @@ def enrich_from_inventory_file(main_df, inv_df):
     
     # Column mappings
     inv_mapping = {
-        'Stock': ['STOCK', 'AFN-FULFILLABLE-QUANTITY', 'STOCK'],
-        'Reserve': ['RESERVE', 'AFN-RESERVED-QUANTITY', 'RESERVE'],
-        'Inbound': ['INBOUND', 'AFN-INBOUND-WORKING-QUANTITY', 'INBOUND'],
-        'Net Ordered GMS($)': ['NET ORDERED GMS($)', 'GMS', 'SALES'],
+        'Stock': ['STOCK', 'AFN-FULFILLABLE-QUANTITY'],
+        'Reserve': ['RESERVE', 'AFN-RESERVED-QUANTITY'],
+        'Inbound': ['INBOUND', 'AFN-INBOUND-WORKING-QUANTITY', 'AFN-INBOUND-SHIPPED-QUANTITY'],
         'Net Ordered Units': ['NET ORDERED UNITS', 'UNITS', 'UNITS SOLD'],
-        'Lifetime': ['LIFETIME', 'LIFETIME SALES'],
-        'Sales 2023': ['SALES 2023', '2023 SALES'],
-        'Current year': ['CURRENT YEAR', 'CURRENT YEAR SALES'],
         'Sales 30': ['SALES 30', 'LAST 30 DAYS', '30 DAYS'],
         'Sales 3': ['SALES 3', 'LAST 3 MONTHS', '90 DAYS'],
-        'Sales 1': ['SALES 1', 'LAST 1 MONTH'],
     }
     
     for idx, row in main_df.iterrows():
@@ -157,10 +167,13 @@ def enrich_from_inventory_file(main_df, inv_df):
                                 if source_pattern in inv_col and inv_col in data:
                                     val = data[inv_col]
                                     if val and val not in [0, '0', '0.0', None]:
-                                        main_df.at[idx, target_col] = val
-                                        cells_filled += 1
-                                        if target_col not in filled_cols:
-                                            filled_cols.append(target_col)
+                                        try:
+                                            main_df.at[idx, target_col] = val
+                                            cells_filled += 1
+                                            if target_col not in filled_cols:
+                                                filled_cols.append(target_col)
+                                        except:
+                                            pass
                                         break
                             if main_df.at[idx, target_col] != row[target_col]:
                                 break
@@ -172,7 +185,7 @@ def enrich_from_restrictions_file(main_df, restrict_df):
     filled_cols = []
     cells_filled = 0
     
-    if restrict_df is None:
+    if restrict_df is None or len(restrict_df) == 0:
         return main_df, filled_cols, cells_filled
     
     # Build restricted brands list
@@ -199,10 +212,13 @@ def enrich_from_restrictions_file(main_df, restrict_df):
                     if col in main_df.columns:
                         current_val = clean_value(row[col])
                         if current_val is None or current_val == 'NA':
-                            main_df.at[idx, col] = 'RESTRICTED - REVIEW'
-                            cells_filled += 1
-                            if col not in filled_cols:
-                                filled_cols.append(col)
+                            try:
+                                main_df.at[idx, col] = 'RESTRICTED - REVIEW'
+                                cells_filled += 1
+                                if col not in filled_cols:
+                                    filled_cols.append(col)
+                            except:
+                                pass
     
     return main_df, filled_cols, cells_filled
 
@@ -211,7 +227,7 @@ def enrich_from_archive_file(main_df, archive_df):
     filled_cols = []
     cells_filled = 0
     
-    if archive_df is None:
+    if archive_df is None or len(archive_df) == 0:
         return main_df, filled_cols, cells_filled
     
     archive_df.columns = [str(c).upper().strip() for c in archive_df.columns]
@@ -252,10 +268,13 @@ def enrich_from_archive_file(main_df, archive_df):
                                 if source_pattern in arch_col and arch_col in data:
                                     val = data[arch_col]
                                     if val and val not in [0, '0', '0.0', None, 'NA']:
-                                        main_df.at[idx, target_col] = val
-                                        cells_filled += 1
-                                        if target_col not in filled_cols:
-                                            filled_cols.append(target_col)
+                                        try:
+                                            main_df.at[idx, target_col] = val
+                                            cells_filled += 1
+                                            if target_col not in filled_cols:
+                                                filled_cols.append(target_col)
+                                        except:
+                                            pass
                                         break
                             if main_df.at[idx, target_col] != row[target_col]:
                                 break
@@ -279,7 +298,10 @@ def calculate_derived_columns(main_df):
                 
                 total = s + r + i
                 if total > 0:
-                    main_df.at[idx, total_col] = total
+                    try:
+                        main_df.at[idx, total_col] = total
+                    except:
+                        pass
     
     if 'Days of stock(30)' in main_df.columns and 'Stock' in main_df.columns and 'Sales 30' in main_df.columns:
         for idx, row in main_df.iterrows():
@@ -290,7 +312,10 @@ def calculate_derived_columns(main_df):
             sl = float(sales) if sales and sales != '0' else 0
             
             if sl > 0:
-                main_df.at[idx, 'Days of stock(30)'] = round((s / sl) * 30, 1)
+                try:
+                    main_df.at[idx, 'Days of stock(30)'] = round((s / sl) * 30, 1)
+                except:
+                    pass
     
     return main_df
 
@@ -313,22 +338,22 @@ col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.markdown("### 📄 FILE 1")
     st.caption("Your Vendor File")
-    main_file = st.file_uploader("Main Excel", type=["xlsx", "xls", "csv"], key="main", label_visibility="collapsed")
+    main_file = st.file_uploader("Main Excel", type=["xlsx", "xls", "xlsm", "csv"], key="main", label_visibility="collapsed")
 
 with col2:
     st.markdown("### 📊 FILE 2")
     st.caption("Inventory File")
-    inv_file = st.file_uploader("Inventory Excel", type=["xlsx", "xls", "csv"], key="inv", label_visibility="collapsed")
+    inv_file = st.file_uploader("Inventory Excel", type=["xlsx", "xls", "xlsm", "csv"], key="inv", label_visibility="collapsed")
 
 with col3:
     st.markdown("### 🚫 FILE 3")
     st.caption("Restrictions File")
-    restrict_file = st.file_uploader("Restrictions Excel", type=["xlsx", "xls", "csv"], key="restrict", label_visibility="collapsed")
+    restrict_file = st.file_uploader("Restrictions Excel", type=["xlsx", "xls", "xlsm", "csv"], key="restrict", label_visibility="collapsed")
 
 with col4:
     st.markdown("### 📚 FILE 4")
     st.caption("Archive File")
-    archive_file = st.file_uploader("Archive Excel", type=["xlsx", "xls", "csv"], key="archive", label_visibility="collapsed")
+    archive_file = st.file_uploader("Archive Excel", type=["xlsx", "xls", "xlsm", "csv"], key="archive", label_visibility="collapsed")
 
 if main_file:
     # Load main file
@@ -337,24 +362,18 @@ if main_file:
     if main_df is not None:
         st.success(f"✅ Main file loaded: {len(main_df)} rows, {len(main_df.columns)} columns")
         
-        # Count empty/zero columns
-        empty_cols = []
-        for col in main_df.columns:
-            na_count = main_df[col].isna().sum()
-            na_count += (main_df[col].astype(str).str.strip() == '#N/A').sum()
-            na_count += (main_df[col].astype(str).str.strip() == 'NA').sum()
-            zero_count = (main_df[col].astype(str).str.strip() == '0').sum()
-            
-            if na_count > len(main_df) * 0.3 or zero_count > len(main_df) * 0.5:
-                empty_cols.append(col)
-        
-        if empty_cols:
-            st.info(f"📝 Found {len(empty_cols)} columns that need filling")
-        
         # Load other files
         inv_df = load_file(inv_file) if inv_file else None
         restrict_df = load_file(restrict_file) if restrict_file else None
         archive_df = load_file(archive_file) if archive_file else None
+        
+        # Show which files are loaded
+        st.markdown("**Files loaded:**")
+        col_status1, col_status2, col_status3, col_status4 = st.columns(4)
+        col_status1.markdown("📄 Main: ✅" if main_df is not None else "📄 Main: ❌")
+        col_status2.markdown("📊 Inventory: ✅" if inv_df is not None else "📊 Inventory: ❌")
+        col_status3.markdown("🚫 Restrictions: ✅" if restrict_df is not None else "🚫 Restrictions: ❌")
+        col_status4.markdown("📚 Archive: ✅" if archive_df is not None else "📚 Archive: ❌")
         
         if inv_file or restrict_file or archive_file:
             if st.button("🚀 START ENRICHMENT", use_container_width=True):
@@ -365,38 +384,42 @@ if main_file:
                 
                 progress = st.progress(0)
                 status = st.empty()
-                step = 0
                 steps = []
-                if inv_df: steps.append("inventory")
-                if restrict_df: steps.append("restrictions")
-                if archive_df: steps.append("archive")
+                if inv_df is not None: steps.append("inventory")
+                if restrict_df is not None: steps.append("restrictions")
+                if archive_df is not None: steps.append("archive")
                 
-                if inv_df:
+                current_step = 0
+                
+                if inv_df is not None:
                     status.info("📊 Processing Inventory File...")
                     enriched_df, cols, cells = enrich_from_inventory_file(enriched_df, inv_df)
                     results.append({"name": "Inventory", "cols": len(cols), "cells": cells})
                     total_cells += cells
                     all_filled_cols.extend(cols)
-                    step += 1
-                    progress.progress(step / len(steps) if steps else 1)
+                    current_step += 1
+                    if steps:
+                        progress.progress(current_step / len(steps))
                 
-                if restrict_df:
+                if restrict_df is not None:
                     status.info("🚫 Processing Restrictions File...")
                     enriched_df, cols, cells = enrich_from_restrictions_file(enriched_df, restrict_df)
                     results.append({"name": "Restrictions", "cols": len(cols), "cells": cells})
                     total_cells += cells
                     all_filled_cols.extend(cols)
-                    step += 1
-                    progress.progress(step / len(steps) if steps else 1)
+                    current_step += 1
+                    if steps:
+                        progress.progress(current_step / len(steps))
                 
-                if archive_df:
+                if archive_df is not None:
                     status.info("📚 Processing Archive File...")
                     enriched_df, cols, cells = enrich_from_archive_file(enriched_df, archive_df)
                     results.append({"name": "Archive", "cols": len(cols), "cells": cells})
                     total_cells += cells
                     all_filled_cols.extend(cols)
-                    step += 1
-                    progress.progress(step / len(steps) if steps else 1)
+                    current_step += 1
+                    if steps:
+                        progress.progress(current_step / len(steps))
                 
                 status.info("🧮 Calculating derived columns...")
                 enriched_df = calculate_derived_columns(enriched_df)
