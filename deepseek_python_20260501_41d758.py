@@ -312,31 +312,30 @@ def clean_value(val) -> Optional[str]:
 
 
 def safe_int(val, default=0) -> int:
-"""Convert to int safely, defaulting on failure."""
-try:
-cv = clean_value(val)
-if cv is None:
-return default
-return int(float(cv))
-except Exception:
-return default
+    """Convert to int safely, defaulting on failure."""
+    try:
+        cv = clean_value(val)
+        if cv is None:
+            return default
+        return int(float(cv))
+    except Exception:
+        return default
 
 
 def safe_float(val, default=0.0) -> float:
-"""Convert to float safely, defaulting on failure."""
-try:
-cv = clean_value(val)
-if cv is None:
-return default
-return float(cv)
-except Exception:
-return default
+    """Convert to float safely, defaulting on failure."""
+    try:
+        cv = clean_value(val)
+        if cv is None:
+            return default
+        return float(cv)
+    except Exception:
+        return default
 
 
 def normalize_col(col: str) -> str:
-"""Lowercase, strip, collapse whitespace."""
-return re.sub(r"\s+", " ", str(col).strip().lower())
-
+    """Lowercase, strip, collapse whitespace."""
+    return re.sub(r"\s+", " ", str(col).strip().lower())
 
 # ─────────────────────────────────────────────────────────────────────────────
 # UNIVERSAL FILE READER
