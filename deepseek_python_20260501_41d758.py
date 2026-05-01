@@ -3,340 +3,314 @@ import pandas as pd
 import io
 from datetime import datetime
 
-st.set_page_config(
-    page_title="VirVentures 4-File Enricher",
-    page_icon="📦",
-    layout="wide",
-)
+# ================= PAGE CONFIG =================
+st.set_page_config(page_title="VirVentures 4-File Enricher", layout="wide")
 
+# ================= CSS =================
 st.markdown("""
 <style>
-.main { padding: 0 1rem; }
-h1, h2, h3 { color: #1e2d4e; }
-.stButton button { background-color: #f47920; color: white; font-weight: bold; border-radius: 8px; border: none; }
-.stButton button:hover { background-color: #e06810; }
-.stDownloadButton button { background-color: white; color: #f47920; border: 2px solid #f47920; border-radius: 8px; }
-.info-box { background-color: #e8f4fd; border-left: 4px solid #f47920; border-radius: 8px; padding: 16px; margin: 16px 0; }
-.success-box { background-color: #d4edda; border-left: 4px solid #28a745; border-radius: 8px; padding: 16px; margin: 16px 0; }
+body { background-color: #f7f7f7; }
+h1, h2, h3 { color: #f47920; }
+.stButton>button {
+    background-color: #f47920;
+    color: white;
+    border-radius: 8px;
+}
+.stProgress > div > div > div > div {
+    background-color: #f47920;
+}
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📦 VirVentures 4-File Inventory Enricher")
-st.caption("Auto-fill Inventory, Stock, Sales, and Restrictions from 4 source files")
-
-# =============================================================================
-# SESSION STATE
-# =============================================================================
-if 'enriched_df' not in st.session_state:
+# ================= SESSION STATE =================
+if "enriched_df" not in st.session_state:
     st.session_state.enriched_df = None
-if 'enriched_filename' not in st.session_state:
-    st.session_state.enriched_filename = None
 
-# =============================================================================
-# UNIVERSAL FILE READER
-# =============================================================================
+# ================= UNIVERSAL FILE READER =================
 def universal_file_reader(uploaded_file):
-    """Reads ANY Excel/CSV file format without encoding issues"""
     if uploaded_file is None:
         return None
-    
+
     try:
-        file_bytes = uploaded_file.getvalue()
-        filename = uploaded_file.name.lower()
-        
-        # CSV files
-        if filename.endswith('.csv'):
-            try:
-                return pd.read_csv(io.BytesIO(file_bytes), encoding='utf-8')
-            except:
-                try:
-                    return pd.read_csv(io.BytesIO(file_bytes), encoding='latin1')
-                except:
-                    return pd.read_csv(io.BytesIO(file_bytes), encoding='cp1252')
-        
+        file_bytes = uploaded_file.read()
+        file_buffer = io.BytesIO(file_bytes)
+
         # Try Excel engines
-        engines = ['openpyxl', 'xlrd', 'calamine']
-        for engine in engines:
+        for engine in ["openpyxl", "xlrd"]:
             try:
-                df = pd.read_excel(io.BytesIO(file_bytes), engine=engine)
-                if df is not None and len(df) > 0:
-                    return df
+                df = pd.read_excel(file_buffer, engine=engine)
+                return df
+            except:
+                file_buffer.seek(0)
+
+        # Try CSV encodings
+        for enc in ["utf-8", "latin1", "cp1252"]:
+            try:
+                file_buffer.seek(0)
+                df = pd.read_csv(file_buffer, encoding=enc)
+                return df
             except:
                 continue
-        
-        # Try without engine
+
+        # Final fallback: generic read
         try:
-            df = pd.read_excel(io.BytesIO(file_bytes))
-            if df is not None and len(df) > 0:
-                return df
+            file_buffer.seek(0)
+            df = pd.read_csv(file_buffer)
+            return df
         except:
-            pass
-        
-        # Try as CSV fallback
-        try:
-            content = file_bytes.decode('utf-8', errors='ignore')
-            lines = content.split('\n')
-            if ',' in lines[0]:
-                return pd.read_csv(io.BytesIO(file_bytes), encoding='utf-8', errors='ignore')
-            elif '\t' in lines[0]:
-                return pd.read_csv(io.BytesIO(file_bytes), sep='\t', encoding='utf-8', errors='ignore')
-        except:
-            pass
-        
-        st.error(f"Cannot read {uploaded_file.name}. Please save as CSV.")
-        return None
-        
-    except Exception as e:
-        st.error(f"Error: {str(e)[:100]}")
+            st.error(f"⚠️ Could not read file: {uploaded_file.name}")
+            return None
+
+    except Exception:
+        st.error(f"⚠️ Error loading file: {uploaded_file.name}")
         return None
 
+
+# ================= CLEAN VALUE =================
 def clean_value(val):
-    if pd.isna(val):
-        return None
-    val_str = str(val).strip()
-    if val_str in ['#N/A', 'N/A', 'NA', 'na', 'n/a', '', 'NaN', 'nan', 'None']:
-        return None
-    return val_str
+    try:
+        if pd.isna(val):
+            return None
 
+        val_str = str(val).strip().lower()
+
+        if val_str in ["", "na", "n/a", "#n/a", "none"]:
+            return None
+
+        if val_str in ["0", "0.0"]:
+            return None
+
+        return val
+    except:
+        return None
+
+
+# ================= EXTRACT SKU =================
 def extract_sku(row):
-    for col in ['INV(A-Z)', 'INV(Z-A)', 'input_Model#', 'Output ASIN', 'SKU']:
-        if col in row.index:
+    cols = ['INV(A-Z)', 'INV(Z-A)', 'input_Model#', 'Output ASIN', 'SKU']
+    for col in cols:
+        if col in row:
             val = clean_value(row[col])
-            if val and len(val) > 3:
-                return val
+            if val is not None:
+                return str(val)
     return None
 
+
+# ================= EXTRACT ASIN =================
 def extract_asin(row):
-    for col in ['Output ASIN', 'ASIN', 'asin', 'input_ASIN']:
-        if col in row.index:
+    cols = ['Output ASIN', 'ASIN', 'asin', 'input_ASIN']
+    for col in cols:
+        if col in row:
             val = clean_value(row[col])
-            if val and val.startswith('B') and len(val) == 10:
-                return val
+            if val is not None:
+                return str(val)
     return None
 
-# =============================================================================
-# ENRICHMENT FUNCTIONS
-# =============================================================================
+
+# ================= INVENTORY ENRICH =================
 def enrich_from_inventory(main_df, inv_df):
-    filled_cols = []
-    cells = 0
-    
     if inv_df is None or len(inv_df) == 0:
-        return main_df, filled_cols, cells
-    
-    inv_df.columns = [str(c).upper().strip() for c in inv_df.columns]
-    
-    # Build SKU mapping
-    sku_map = {}
+        return main_df, {}
+
+    filled_counts = {}
+
+    # Normalize columns
+    inv_df.columns = [c.upper() for c in inv_df.columns]
+
+    # Build lookup
+    lookup = {}
     for _, row in inv_df.iterrows():
-        sku = None
-        for col in ['SKU', 'SKU(A-Z)', 'SKU(Z-A)']:
-            if col in inv_df.columns:
-                sku = clean_value(row[col])
-                if sku:
-                    break
+        sku = str(row.get("SKU") or row.get("SKU(A-Z)") or row.get("SKU(Z-A)") or "")
+        asin = str(row.get("ASIN") or "")
+
+        data = {
+            "Stock": row.get("STOCK") or row.get("AFN-FULFILLABLE-QUANTITY"),
+            "Reserve": row.get("RESERVE") or row.get("AFN-RESERVED-QUANTITY"),
+            "Inbound": row.get("INBOUND") or row.get("AFN-INBOUND-WORKING-QUANTITY")
+        }
+
         if sku:
-            sku_map[sku] = row.to_dict()
-    
-    # Fill data
-    for idx, row in main_df.iterrows():
+            lookup[("SKU", sku)] = data
+        if asin:
+            lookup[("ASIN", asin)] = data
+
+    # Fill main file
+    for col in ["Stock", "Reserve", "Inbound"]:
+        filled_counts[col] = 0
+
+    for i, row in main_df.iterrows():
         sku = extract_sku(row)
-        if sku and sku in sku_map:
-            data = sku_map[sku]
-            
-            mapping = {
-                'Stock': ['STOCK', 'AFN-FULFILLABLE-QUANTITY'],
-                'Reserve': ['RESERVE', 'AFN-RESERVED-QUANTITY'],
-                'Inbound': ['INBOUND', 'AFN-INBOUND-WORKING-QUANTITY'],
-            }
-            
-            for target, sources in mapping.items():
-                if target in main_df.columns:
-                    current = clean_value(row[target])
-                    if current is None or current in ['0', '0.0', '']:
-                        for src in sources:
-                            for col in inv_df.columns:
-                                if src in col and col in data:
-                                    val = clean_value(data[col])
-                                    if val and val not in ['0', '0.0', None]:
-                                        main_df.at[idx, target] = val
-                                        cells += 1
-                                        if target not in filled_cols:
-                                            filled_cols.append(target)
-                                        break
-                                if main_df.at[idx, target] != row[target]:
-                                    break
-    
-    return main_df, filled_cols, cells
+        asin = extract_asin(row)
 
+        source = None
+        if sku and ("SKU", sku) in lookup:
+            source = lookup[("SKU", sku)]
+        elif asin and ("ASIN", asin) in lookup:
+            source = lookup[("ASIN", asin)]
+
+        if source:
+            for col in ["Stock", "Reserve", "Inbound"]:
+                if col in main_df.columns:
+                    current_val = clean_value(row.get(col))
+                    if current_val is None:
+                        new_val = source.get(col)
+                        if new_val is not None:
+                            main_df.at[i, col] = new_val
+                            filled_counts[col] += 1
+
+    return main_df, filled_counts
+
+
+# ================= RESTRICTIONS ENRICH =================
 def enrich_from_restrictions(main_df, restrict_df):
-    filled_cols = []
-    cells = 0
-    
     if restrict_df is None or len(restrict_df) == 0:
-        return main_df, filled_cols, cells
-    
-    # Build restricted brands set
-    restricted = set()
-    for col in restrict_df.columns:
-        for val in restrict_df[col].dropna():
-            val_str = str(val).strip().lower()
-            if len(val_str) > 2:
-                restricted.add(val_str)
-    
-    for idx, row in main_df.iterrows():
-        brand_col = None
-        for col in ['Brand', 'brand']:
-            if col in main_df.columns:
-                brand_col = col
-                break
-        
-        if brand_col:
-            brand = clean_value(row[brand_col])
-            if brand and str(brand).lower() in restricted:
-                for col in ['Restricted', 'Listing Status']:
-                    if col in main_df.columns:
-                        current = clean_value(row[col])
-                        if current is None or current == 'NA':
-                            main_df.at[idx, col] = 'RESTRICTED'
-                            cells += 1
-                            if col not in filled_cols:
-                                filled_cols.append(col)
-    
-    return main_df, filled_cols, cells
+        return main_df, 0
 
-def calculate_derived(main_df):
-    if 'Stock' in main_df.columns and 'Reserve' in main_df.columns and 'Inbound' in main_df.columns:
-        total_col = 'TOTAL(Stock+Reserve+inbound)'
-        if total_col in main_df.columns:
-            for idx, row in main_df.iterrows():
-                s = float(clean_value(row['Stock']) or 0)
-                r = float(clean_value(row['Reserve']) or 0)
-                i = float(clean_value(row['Inbound']) or 0)
-                total = s + r + i
-                if total > 0:
-                    main_df.at[idx, total_col] = total
+    restricted_brands = set(restrict_df.iloc[:, 0].astype(str).str.lower())
+
+    count = 0
+    if "Brand" in main_df.columns:
+        for i, row in main_df.iterrows():
+            brand = str(row.get("Brand", "")).lower()
+            if brand in restricted_brands:
+                main_df.at[i, "Restricted"] = "Yes"
+                count += 1
+
+    return main_df, count
+
+
+# ================= ARCHIVE ENRICH =================
+def enrich_from_archive(main_df, archive_df):
+    if archive_df is None or len(archive_df) == 0:
+        return main_df
+
+    archive_lookup = {}
+    for _, row in archive_df.iterrows():
+        asin = str(row.get("ASIN") or "")
+        archive_lookup[asin] = row.to_dict()
+
+    for i, row in main_df.iterrows():
+        asin = extract_asin(row)
+        if asin in archive_lookup:
+            # Example: fill listing status
+            if "Listing Status" in main_df.columns:
+                if clean_value(row.get("Listing Status")) is None:
+                    main_df.at[i, "Listing Status"] = archive_lookup[asin].get("Listing Status")
+
     return main_df
 
-# =============================================================================
-# UI
-# =============================================================================
-st.markdown("""
-<div class="info-box">
-    <b>✨ Universal File Reader Active</b><br>
-    Upload ANY Excel file format - the system will read it automatically.
-</div>
-""", unsafe_allow_html=True)
+
+# ================= DERIVED CALCULATIONS =================
+def calculate_derived(df):
+    if df is None or len(df) == 0:
+        return df
+
+    def safe_num(x):
+        try:
+            return float(x)
+        except:
+            return 0
+
+    if "TOTAL(Stock+Reserve+inbound)" in df.columns:
+        df["TOTAL(Stock+Reserve+inbound)"] = df.apply(
+            lambda r: safe_num(r.get("Stock")) +
+                      safe_num(r.get("Reserve")) +
+                      safe_num(r.get("Inbound")), axis=1
+        )
+
+    if "Days of stock(30)" in df.columns:
+        def calc_days(r):
+            stock = safe_num(r.get("Stock"))
+            sales = safe_num(r.get("Sales 30"))
+            if sales > 0:
+                return (stock / sales) * 30
+            return None
+
+        df["Days of stock(30)"] = df.apply(calc_days, axis=1)
+
+    return df
+
+
+# ================= UI =================
+st.title("🚀 VirVentures 4-File Data Enricher")
 
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    st.markdown("### 📄 MAIN FILE")
-    main_file = st.file_uploader("Main File", type=["xlsx", "xls", "csv", "xlsm"], key="main", label_visibility="collapsed")
+    main_file = st.file_uploader("📂 Main File", type=["xlsx", "xls", "xlsm", "csv"])
 
 with col2:
-    st.markdown("### 📊 INVENTORY")
-    inv_file = st.file_uploader("Inventory", type=["xlsx", "xls", "csv", "xlsm"], key="inv", label_visibility="collapsed")
+    inv_file = st.file_uploader("📦 Inventory File", type=["xlsx", "xls", "xlsm", "csv"])
 
 with col3:
-    st.markdown("### 🚫 RESTRICTIONS")
-    restrict_file = st.file_uploader("Restrictions", type=["xlsx", "xls", "csv", "xlsm"], key="restrict", label_visibility="collapsed")
+    restrict_file = st.file_uploader("🚫 Restrictions File", type=["xlsx", "xls", "csv"])
 
 with col4:
-    st.markdown("### 📚 ARCHIVE")
-    archive_file = st.file_uploader("Archive", type=["xlsx", "xls", "csv", "xlsm"], key="archive", label_visibility="collapsed")
+    archive_file = st.file_uploader("🗂 Archive File", type=["xlsx", "xls", "csv"])
 
-if main_file is not None:
-    # Load using universal reader
-    main_df = universal_file_reader(main_file)
-    
-    if main_df is not None and len(main_df) > 0:
-        st.success(f"✅ Main: {len(main_df)} rows, {len(main_df.columns)} cols")
-        
-        # Load other files (check if file was uploaded first)
-        inv_df = None
-        restrict_df = None
-        archive_df = None
-        
-        if inv_file is not None:
-            inv_df = universal_file_reader(inv_file)
-        if restrict_file is not None:
-            restrict_df = universal_file_reader(restrict_file)
-        if archive_file is not None:
-            archive_df = universal_file_reader(archive_file)
-        
-        # Status
-        st.markdown("**Status:**")
-        s1, s2, s3, s4 = st.columns(4)
-        s1.markdown("📄 Main: ✅")
-        s2.markdown("📊 Inventory: ✅" if inv_df is not None else "📊 Inventory: ❌")
-        s3.markdown("🚫 Restrictions: ✅" if restrict_df is not None else "🚫 Restrictions: ❌")
-        s4.markdown("📚 Archive: ✅" if archive_df is not None else "📚 Archive: ❌")
-        
-        # Check if ANY additional files were uploaded
-        has_additional = (inv_file is not None) or (restrict_file is not None) or (archive_file is not None)
-        
-        if has_additional:
-            if st.button("🚀 START ENRICHMENT", use_container_width=True):
-                enriched = main_df.copy()
-                results = []
-                total_cells = 0
-                all_cols = []
-                
-                pbar = st.progress(0)
-                step = 0
-                total_steps = sum([1 for x in [inv_df, restrict_df, archive_df] if x is not None])
-                
-                if inv_df is not None:
-                    step += 1
-                    pbar.progress(step / total_steps if total_steps > 0 else 0.25)
-                    enriched, cols, cells = enrich_from_inventory(enriched, inv_df)
-                    results.append({"name": "Inventory", "cols": len(cols), "cells": cells})
-                    total_cells += cells
-                    all_cols.extend(cols)
-                
-                if restrict_df is not None:
-                    step += 1
-                    pbar.progress(step / total_steps if total_steps > 0 else 0.5)
-                    enriched, cols, cells = enrich_from_restrictions(enriched, restrict_df)
-                    results.append({"name": "Restrictions", "cols": len(cols), "cells": cells})
-                    total_cells += cells
-                    all_cols.extend(cols)
-                
-                if archive_df is not None:
-                    step += 1
-                    pbar.progress(step / total_steps if total_steps > 0 else 0.75)
-                    # Archive enrichment here
-                    pass
-                
-                pbar.progress(1.0)
-                enriched = calculate_derived(enriched)
-                
-                st.session_state.enriched_df = enriched
-                timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-                st.session_state.enriched_filename = f"{main_file.name.split('.')[0]}_Enriched_{timestamp}.xlsx"
-                
-                st.markdown('<div class="success-box">✅ Enrichment Complete!</div>', unsafe_allow_html=True)
-                
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Rows", len(enriched))
-                c2.metric("Files", len(results))
-                c3.metric("Columns Filled", len(set(all_cols)))
-                c4.metric("Cells Updated", total_cells)
-                
-                for r in results:
-                    st.markdown(f"• **{r['name']}**: {r['cols']} cols, {r['cells']} cells")
+
+# ================= PROCESSING =================
+if st.button("⚡ ENRICH DATA"):
+
+    if main_file is None:
+        st.error("❌ Please upload Main File")
     else:
-        st.error("Could not read main file. Please check file format.")
+        progress = st.progress(0)
 
-# Download
+        steps = 5
+        step = 0
+
+        # Load files
+        main_df = universal_file_reader(main_file)
+        step += 1
+        progress.progress(step / steps)
+
+        inv_df = universal_file_reader(inv_file) if inv_file is not None else None
+        step += 1
+        progress.progress(step / steps)
+
+        restrict_df = universal_file_reader(restrict_file) if restrict_file is not None else None
+        step += 1
+        progress.progress(step / steps)
+
+        archive_df = universal_file_reader(archive_file) if archive_file is not None else None
+        step += 1
+        progress.progress(step / steps)
+
+        if main_df is not None and len(main_df) > 0:
+
+            # Enrichment
+            main_df, inv_stats = enrich_from_inventory(main_df, inv_df)
+            main_df, restrict_count = enrich_from_restrictions(main_df, restrict_df)
+            main_df = enrich_from_archive(main_df, archive_df)
+            main_df = calculate_derived(main_df)
+
+            step += 1
+            progress.progress(step / steps)
+
+            st.success("✅ Enrichment Complete!")
+
+            # Stats
+            st.subheader("📊 Fill Summary")
+            st.write(inv_stats)
+            st.write(f"Restricted flagged: {restrict_count}")
+
+            st.session_state.enriched_df = main_df
+
+        else:
+            st.error("❌ Main file could not be processed")
+
+
+# ================= DOWNLOAD =================
 if st.session_state.enriched_df is not None:
-    st.markdown("---")
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        st.session_state.enriched_df.to_excel(writer, index=False)
-    
-    st.download_button("📥 Download Enriched File", output.getvalue(), st.session_state.enriched_filename, use_container_width=True)
 
-st.markdown("---")
-st.caption("⚡ VirVentures 4-File Enricher | Universal File Reader")
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        st.session_state.enriched_df.to_excel(writer, index=False)
+
+    st.download_button(
+        label="⬇️ Download Enriched File",
+        data=output.getvalue(),
+        file_name=f"VirVentures_Enriched_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
