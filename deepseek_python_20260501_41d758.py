@@ -342,24 +342,24 @@ def normalize_col(col: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def universal_file_reader(uploaded_file, label: str = "file") -> Optional[pd.DataFrame]:
-"""
-Fault-tolerant file reader that tries every known strategy.
-Never crashes. Returns None on total failure.
-"""
-if uploaded_file is None:
-return None
+    """
+    Fault-tolerant file reader that tries every known strategy.
+    Never crashes. Returns None on total failure.
+    """
+    if uploaded_file is None:
+        return None
 
-try:
-raw_bytes = uploaded_file.getvalue()
-except Exception as e:
-st.error(f"❌ [{label}] Could not read file bytes: {e}")
-return None
+    try:
+        raw_bytes = uploaded_file.getvalue()
+    except Exception as e:
+        st.error(f"❌ [{label}] Could not read file bytes: {e}")
+        return None
 
-filename = getattr(uploaded_file, "name", "").lower()
-is_csv_ext = filename.endswith(".csv")
-is_excel_ext = any(filename.endswith(x) for x in (".xlsx", ".xls", ".xlsm", ".xlsb"))
+    filename = getattr(uploaded_file, "name", "").lower()
+    is_csv_ext = filename.endswith(".csv")
+    is_excel_ext = any(filename.endswith(x) for x in (".xlsx", ".xls", ".xlsm", ".xlsb"))
 
-strategies = []
+    strategies = []
 
 # ── Excel strategies ──────────────────────────────────────────────────────
 if not is_csv_ext:
