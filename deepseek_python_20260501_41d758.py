@@ -44,7 +44,7 @@ def universal_file_reader(uploaded_file):
         file_bytes = uploaded_file.getvalue()
         filename = uploaded_file.name.lower()
         
-        # CSV files - easiest
+        # CSV files
         if filename.endswith('.csv'):
             try:
                 return pd.read_csv(io.BytesIO(file_bytes), encoding='utf-8')
@@ -54,7 +54,7 @@ def universal_file_reader(uploaded_file):
                 except:
                     return pd.read_csv(io.BytesIO(file_bytes), encoding='cp1252')
         
-        # Try all Excel engines
+        # Try Excel engines
         engines = ['openpyxl', 'xlrd', 'calamine']
         for engine in engines:
             try:
@@ -72,7 +72,7 @@ def universal_file_reader(uploaded_file):
         except:
             pass
         
-        # Last resort - try as CSV
+        # Try as CSV fallback
         try:
             content = file_bytes.decode('utf-8', errors='ignore')
             lines = content.split('\n')
@@ -224,8 +224,7 @@ def calculate_derived(main_df):
 st.markdown("""
 <div class="info-box">
     <b>✨ Universal File Reader Active</b><br>
-    Upload ANY Excel file format - the system will read it automatically.<br>
-    Supported: .xlsx, .xls, .xlsm, .csv, and more.
+    Upload ANY Excel file format - the system will read it automatically.
 </div>
 """, unsafe_allow_html=True)
 
@@ -247,16 +246,24 @@ with col4:
     st.markdown("### 📚 ARCHIVE")
     archive_file = st.file_uploader("Archive", type=["xlsx", "xls", "csv", "xlsm"], key="archive", label_visibility="collapsed")
 
-if main_file:
+if main_file is not None:
     # Load using universal reader
     main_df = universal_file_reader(main_file)
     
     if main_df is not None and len(main_df) > 0:
         st.success(f"✅ Main: {len(main_df)} rows, {len(main_df.columns)} cols")
         
-        inv_df = universal_file_reader(inv_file) if inv_file else None
-        restrict_df = universal_file_reader(restrict_file) if restrict_file else None
-        archive_df = universal_file_reader(archive_file) if archive_file else None
+        # Load other files (check if file was uploaded first)
+        inv_df = None
+        restrict_df = None
+        archive_df = None
+        
+        if inv_file is not None:
+            inv_df = universal_file_reader(inv_file)
+        if restrict_file is not None:
+            restrict_df = universal_file_reader(restrict_file)
+        if archive_file is not None:
+            archive_df = universal_file_reader(archive_file)
         
         # Status
         st.markdown("**Status:**")
@@ -266,7 +273,10 @@ if main_file:
         s3.markdown("🚫 Restrictions: ✅" if restrict_df is not None else "🚫 Restrictions: ❌")
         s4.markdown("📚 Archive: ✅" if archive_df is not None else "📚 Archive: ❌")
         
-        if inv_file or restrict_file or archive_file:
+        # Check if ANY additional files were uploaded
+        has_additional = (inv_file is not None) or (restrict_file is not None) or (archive_file is not None)
+        
+        if has_additional:
             if st.button("🚀 START ENRICHMENT", use_container_width=True):
                 enriched = main_df.copy()
                 results = []
@@ -274,24 +284,29 @@ if main_file:
                 all_cols = []
                 
                 pbar = st.progress(0)
+                step = 0
+                total_steps = sum([1 for x in [inv_df, restrict_df, archive_df] if x is not None])
                 
-                if inv_df:
-                    pbar.progress(0.25)
+                if inv_df is not None:
+                    step += 1
+                    pbar.progress(step / total_steps if total_steps > 0 else 0.25)
                     enriched, cols, cells = enrich_from_inventory(enriched, inv_df)
                     results.append({"name": "Inventory", "cols": len(cols), "cells": cells})
                     total_cells += cells
                     all_cols.extend(cols)
                 
-                if restrict_df:
-                    pbar.progress(0.50)
+                if restrict_df is not None:
+                    step += 1
+                    pbar.progress(step / total_steps if total_steps > 0 else 0.5)
                     enriched, cols, cells = enrich_from_restrictions(enriched, restrict_df)
                     results.append({"name": "Restrictions", "cols": len(cols), "cells": cells})
                     total_cells += cells
                     all_cols.extend(cols)
                 
-                if archive_df:
-                    pbar.progress(0.75)
-                    # Archive enrichment logic here
+                if archive_df is not None:
+                    step += 1
+                    pbar.progress(step / total_steps if total_steps > 0 else 0.75)
+                    # Archive enrichment here
                     pass
                 
                 pbar.progress(1.0)
@@ -321,7 +336,7 @@ if st.session_state.enriched_df is not None:
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         st.session_state.enriched_df.to_excel(writer, index=False)
     
-    st.download_button("📥 Download", output.getvalue(), st.session_state.enriched_filename, use_container_width=True)
+    st.download_button("📥 Download Enriched File", output.getvalue(), st.session_state.enriched_filename, use_container_width=True)
 
 st.markdown("---")
-st.caption("⚡ Universal File Reader | Reads ANY Excel format")
+st.caption("⚡ VirVentures 4-File Enricher | Universal File Reader")
