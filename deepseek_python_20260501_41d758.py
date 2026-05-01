@@ -1,5 +1,5 @@
 # VirVentures FBA Enrichment Engine
-# Production-grade inventory enrichment tool for Amazon FBA resellers.
+# Full Production Code - Updated for Pandas 3.x Compatibility
 
 import streamlit as st
 import pandas as pd
@@ -8,317 +8,90 @@ import io
 import os
 import csv
 import chardet
-import difflib
 import re
-import traceback
-from datetime import datetime, date
-from typing import Optional
+from datetime import datetime
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PAGE CONFIG
+# PAGE CONFIG & STYLING
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="VirVentures · FBA Enrichment Engine",
+    page_title="VirVentures · FBA Enrichment",
     page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="collapsed",
+    layout="wide"
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GLOBAL STYLE
-# ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap');
-
-:root {
---bg: #0a0c10;
---surface: #111318;
---border: #1e2230;
---accent: #00e5a0;
---accent2: #ff6b35;
---text: #e8ecf4;
---muted: #6b7592;
---danger: #ff4757;
---warn: #ffa502;
-}
-
-html, body, [class*="css"] {
-background-color: var(--bg) !important;
-color: var(--text) !important;
-font-family: 'Syne', sans-serif !important;
-}
-
-/* Header */
-.virv-header {
-display: flex;
-align-items: center;
-gap: 16px;
-padding: 28px 0 8px 0;
-border-bottom: 1px solid var(--border);
-margin-bottom: 28px;
-}
-.virv-logo {
-font-family: 'Space Mono', monospace;
-font-size: 1.05rem;
-font-weight: 700;
-color: var(--accent);
-letter-spacing: 2px;
-border: 1.5px solid var(--accent);
-padding: 6px 12px;
-border-radius: 4px;
-}
-.virv-title {
-font-size: 1.55rem;
-font-weight: 800;
-color: var(--text);
-letter-spacing: -0.5px;
-}
-.virv-sub {
-font-size: 0.82rem;
-color: var(--muted);
-margin-top: 3px;
-font-family: 'Space Mono', monospace;
-}
-
-/* Upload cards */
-.upload-label {
-font-size: 0.72rem;
-font-weight: 700;
-letter-spacing: 2px;
-text-transform: uppercase;
-color: var(--muted);
-margin-bottom: 6px;
-font-family: 'Space Mono', monospace;
-}
-.required-badge {
-color: var(--accent2);
-font-size: 0.65rem;
-margin-left: 6px;
-vertical-align: middle;
-}
-.optional-badge {
-color: var(--muted);
-font-size: 0.65rem;
-margin-left: 6px;
-vertical-align: middle;
-}
-
-/* Stat cards */
-.stat-row {
-display: grid;
-grid-template-columns: repeat(4, 1fr);
-gap: 14px;
-margin: 20px 0;
-}
-.stat-card {
-background: var(--surface);
-border: 1px solid var(--border);
-border-radius: 8px;
-padding: 18px 20px;
-}
-.stat-card .val {
-font-family: 'Space Mono', monospace;
-font-size: 1.7rem;
-font-weight: 700;
-color: var(--accent);
-line-height: 1;
-}
-.stat-card .lbl {
-font-size: 0.72rem;
-color: var(--muted);
-margin-top: 6px;
-letter-spacing: 1px;
-text-transform: uppercase;
-}
-
-/* Enrich button */
-div[data-testid="stButton"] > button {
-background: var(--accent) !important;
-color: #000 !important;
-font-family: 'Space Mono', monospace !important;
-font-weight: 700 !important;
-font-size: 0.85rem !important;
-letter-spacing: 2px !important;
-padding: 12px 32px !important;
-border: none !important;
-border-radius: 4px !important;
-cursor: pointer !important;
-transition: all 0.15s !important;
-width: 100% !important;
-}
-div[data-testid="stButton"] > button:hover {
-background: #00ffb3 !important;
-transform: translateY(-1px) !important;
-}
-
-/* Section dividers */
-.section-head {
-font-size: 0.7rem;
-font-weight: 700;
-letter-spacing: 3px;
-text-transform: uppercase;
-color: var(--muted);
-font-family: 'Space Mono', monospace;
-padding: 18px 0 10px 0;
-border-top: 1px solid var(--border);
-margin-top: 10px;
-}
-
-/* File badge */
-.file-ok {
-display: inline-block;
-background: rgba(0,229,160,0.12);
-color: var(--accent);
-font-family: 'Space Mono', monospace;
-font-size: 0.7rem;
-padding: 3px 10px;
-border-radius: 3px;
-margin-top: 4px;
-}
-.file-err {
-display: inline-block;
-background: rgba(255,71,87,0.12);
-color: var(--danger);
-font-family: 'Space Mono', monospace;
-font-size: 0.7rem;
-padding: 3px 10px;
-border-radius: 3px;
-margin-top: 4px;
-}
-
-/* Metric accent */
-.fill-stat {
-font-family: 'Space Mono', monospace;
-font-size: 0.78rem;
-color: var(--accent);
-padding: 4px 0;
-}
+    .reportview-container { background: #0a0c10; color: #e8ecf4; }
+    .virv-header { border-bottom: 1px solid #1e2230; margin-bottom: 20px; padding-bottom: 10px; }
+    .virv-logo { font-weight: bold; color: #00e5a0; border: 1px solid #00e5a0; padding: 5px 10px; border-radius: 4px; }
 </style>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CONSTANTS
+# CONSTANTS & UTILITIES
 # ─────────────────────────────────────────────────────────────────────────────
 HISTORY_FILE = "history.csv"
+MISSING_VALUES = {"", "0", "0.0", "na", "n/a", "none", "nan", "null"}
 
-MISSING_VALUES = {
-    "", "0", "0.0", "na", "n/a", "#n/a", "none", "null",
-    "nan", "#value!", "#ref!", "#name?", "n.a.", "n.a", "-",
-    "unknown", "undefined",
-}
-
-STANDARD_MAP: dict[str, list[str]] = {
-    "sku": ["sku", "model#", "model number", "item code", "item#", "seller sku"],
-    "asin": ["asin", "amazon asin", "output asin", "parent asin"],
-    "stock": ["stock", "afn-fulfillable-quantity", "available qty", "inventory"],
-    "reserve": ["reserve", "reserved", "afn-reserved-quantity", "fc transfer"],
+STANDARD_MAP = {
+    "sku": ["sku", "model#", "model number", "item code", "seller sku"],
+    "asin": ["asin", "amazon asin", "output asin"],
+    "stock": ["stock", "afn-fulfillable-quantity", "available qty"],
+    "reserve": ["reserve", "reserved", "afn-reserved-quantity"],
     "inbound": ["inbound", "inbound quantity", "afn-inbound-shipped-quantity"],
     "brand": ["brand", "brand name", "manufacturer"],
-    "sales_30": ["sales 30", "sales30", "30 day sales"],
-    "listing_status": ["listing status", "status", "item status"],
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# UTILITIES
-# ─────────────────────────────────────────────────────────────────────────────
-
-def clean_value(val) -> Optional[str]:
-    if val is None:
-        return None
-    if isinstance(val, float) and (np.isnan(val) or val == 0.0):
-        return None
-    if isinstance(val, int) and val == 0:
-        return None
+def clean_value(val):
+    if val is None or (isinstance(val, float) and np.isnan(val)): return None
     s = str(val).strip()
-    if s.lower() in MISSING_VALUES:
-        return None
-    return s
+    return None if s.lower() in MISSING_VALUES else s
 
-def safe_int(val, default=0) -> int:
-    try:
-        cv = clean_value(val)
-        return int(float(cv)) if cv is not None else default
-    except:
-        return default
+def safe_int(val):
+    try: return int(float(clean_value(val) or 0))
+    except: return 0
 
-def safe_float(val, default=0.0) -> float:
-    try:
-        cv = clean_value(val)
-        return float(cv) if cv is not None else default
-    except:
-        return default
-
-def normalize_col(col: str) -> str:
+def normalize_col(col):
     return re.sub(r"\s+", " ", str(col).strip().lower())
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FILE READER
+# DATA PROCESSING
 # ─────────────────────────────────────────────────────────────────────────────
 
-def universal_file_reader(uploaded_file, label: str = "file") -> Optional[pd.DataFrame]:
-    if uploaded_file is None:
-        return None
+def universal_file_reader(uploaded_file):
+    if uploaded_file is None: return None
     try:
         raw_bytes = uploaded_file.getvalue()
-        filename = uploaded_file.name.lower()
-        
-        # Detect encoding
-        detected = chardet.detect(raw_bytes[:4096])
+        detected = chardet.detect(raw_bytes[:10000])
         enc = detected.get("encoding") or "utf-8"
         
-        if filename.endswith(('.xlsx', '.xls', '.xlsm', '.xlsb')):
-            df = pd.read_excel(io.BytesIO(raw_bytes), dtype=str)
+        if uploaded_file.name.endswith(('.xlsx', '.xls')):
+            return pd.read_excel(io.BytesIO(raw_bytes), dtype=str)
         else:
-            df = pd.read_csv(io.BytesIO(raw_bytes), encoding=enc, dtype=str, on_bad_lines="skip")
-        
-        if df is not None:
-            df.columns = [str(c).strip() for c in df.columns]
-            return df
+            return pd.read_csv(io.BytesIO(raw_bytes), encoding=enc, dtype=str, on_bad_lines="skip")
     except Exception as e:
-        st.error(f"Error reading {label}: {e}")
-    return None
+        st.error(f"Error reading file: {e}")
+        return None
 
-def auto_map_columns(df: pd.DataFrame) -> dict:
+def auto_map_columns(df):
     cols_norm = {normalize_col(c): c for c in df.columns}
-    mapping = {}
-    for std_key, aliases in STANDARD_MAP.items():
-        found = next((cols_norm[a] for a in aliases if a in cols_norm), None)
-        mapping[std_key] = found
-    return mapping
+    return {k: next((cols_norm[a] for a in aliases if a in cols_norm), None) for k, aliases in STANDARD_MAP.items()}
 
-# ─────────────────────────────────────────────────────────────────────────────
-# LOGIC
-# ─────────────────────────────────────────────────────────────────────────────
-
-def build_inventory_lookup(inv_df: pd.DataFrame) -> dict:
+def build_inventory_lookup(inv_df):
     lookup = {}
     if inv_df is None: return lookup
     m = auto_map_columns(inv_df)
     for _, row in inv_df.iterrows():
-        sku = clean_value(row.get(m['sku']))
-        asin = clean_value(row.get(m['asin']))
-        data = {
-            "stock": safe_int(row.get(m['stock'])),
-            "reserve": safe_int(row.get(m['reserve'])),
-            "inbound": safe_int(row.get(m['inbound']))
-        }
+        sku, asin = clean_value(row.get(m['sku'])), clean_value(row.get(m['asin']))
+        data = {"stock": safe_int(row.get(m['stock'])), "reserve": safe_int(row.get(m['reserve'])), "inbound": safe_int(row.get(m['inbound']))}
         if sku: lookup[sku.lower()] = data
         if asin: lookup[asin.lower()] = data
     return lookup
 
-def build_restrictions_set(rest_df: pd.DataFrame) -> set:
-    brands = set()
-    if rest_df is None: return brands
-    m = auto_map_columns(rest_df)
-    col = m.get('brand') or rest_df.columns[0]
-    for val in rest_df[col].dropna():
-        cv = clean_value(val)
-        if cv: brands.add(cv.lower())
-    return brands
-
-def enrich_main(main_df, inv_lookup, restricted_brands, progress_cb=None):
-    df = main_df.copy()
+def enrich_main(main_df, inv_lookup, restricted_brands):
+    # CRITICAL FIX: Convert to object to avoid Arrow/String TypeError in Pandas 3.x
+    df = main_df.copy().astype(object)
     m = auto_map_columns(df)
     stats = {"stock_filled": 0, "restricted_flagged": 0}
     
@@ -326,12 +99,10 @@ def enrich_main(main_df, inv_lookup, restricted_brands, progress_cb=None):
         if col not in df.columns: df[col] = None
 
     for i, row in df.iterrows():
-        sku = clean_value(row.get(m['sku']))
-        asin = clean_value(row.get(m['asin']))
+        sku = (clean_value(row.get(m['sku'])) or "").lower()
+        asin = (clean_value(row.get(m['asin'])) or "").lower()
         
-        key = (sku or "").lower()
-        data = inv_lookup.get(key) or inv_lookup.get((asin or "").lower())
-        
+        data = inv_lookup.get(sku) or inv_lookup.get(asin)
         if data:
             df.at[i, "Stock"] = data["stock"]
             df.at[i, "Reserve"] = data["reserve"]
@@ -339,87 +110,78 @@ def enrich_main(main_df, inv_lookup, restricted_brands, progress_cb=None):
             df.at[i, "TOTAL"] = data["stock"] + data["reserve"] + data["inbound"]
             stats["stock_filled"] += 1
             
-        brand_val = clean_value(row.get(m['brand']))
-        if brand_val and brand_val.lower() in restricted_brands:
-            df.at[i, "Restricted"] = "Yes"
-            stats["restricted_flagged"] += 1
-        else:
-            df.at[i, "Restricted"] = "No"
+        brand = (clean_value(row.get(m['brand'])) or "").lower()
+        df.at[i, "Restricted"] = "Yes" if brand in restricted_brands else "No"
+        if brand in restricted_brands: stats["restricted_flagged"] += 1
             
     return df, stats
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HISTORY WITH SAFETY
+# HISTORY LOGGING
 # ─────────────────────────────────────────────────────────────────────────────
 
 def append_history(df, stats):
-    try:
-        row = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "rows_processed": len(df),
-            "stock_filled": stats.get("stock_filled", 0),
-            "restricted_flagged": stats.get("restricted_flagged", 0),
-            "total_stock_units": sum(safe_int(v) for v in df["Stock"]) if "Stock" in df.columns else 0
-        }
-        new_df = pd.DataFrame([row])
-        if os.path.exists(HISTORY_FILE):
-            pd.concat([pd.read_csv(HISTORY_FILE), new_df]).to_csv(HISTORY_FILE, index=False)
-        else:
-            new_df.to_csv(HISTORY_FILE, index=False)
-    except: pass
-
-def load_history():
+    row = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "rows_processed": len(df),
+        "stock_filled": stats["stock_filled"],
+        "restricted_flagged": stats["restricted_flagged"]
+    }
+    new_df = pd.DataFrame([row])
     if os.path.exists(HISTORY_FILE):
-        return pd.read_csv(HISTORY_FILE)
-    return None
+        pd.concat([pd.read_csv(HISTORY_FILE), new_df]).to_csv(HISTORY_FILE, index=False)
+    else:
+        new_df.to_csv(HISTORY_FILE, index=False)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# UI
+# INTERFACE
 # ─────────────────────────────────────────────────────────────────────────────
 
-st.markdown('<div class="virv-header"><div class="virv-logo">VV</div><div class="virv-title">FBA Enrichment Engine</div></div>', unsafe_allow_html=True)
+st.markdown('<div class="virv-header"><span class="virv-logo">VV</span> <b>ENRICHMENT ENGINE</b></div>', unsafe_allow_html=True)
 
-tab_enrich, tab_history = st.tabs(["⚡ ENRICH", "📈 HISTORY"])
+tab1, tab2 = st.tabs(["⚡ Run", "📈 History"])
 
-with tab_enrich:
-    c1, c2, c3 = st.columns(3)
-    with c1: main_file = st.file_uploader("Main File", type=["csv", "xlsx"])
-    with c2: inv_file = st.file_uploader("Inventory File", type=["csv", "xlsx"])
-    with c3: rest_file = st.file_uploader("Restrictions", type=["csv", "xlsx"])
+with tab1:
+    col1, col2, col3 = st.columns(3)
+    with col1: f_main = st.file_uploader("Main File", type=["csv", "xlsx"])
+    with col2: f_inv = st.file_uploader("Inventory File", type=["csv", "xlsx"])
+    with col3: f_rest = st.file_uploader("Restrictions", type=["csv", "xlsx"])
 
-    if st.button("⚡ RUN ENRICHMENT") and main_file:
-        m_df = universal_file_reader(main_file, "MAIN")
-        i_df = universal_file_reader(inv_file, "INV")
-        r_df = universal_file_reader(rest_file, "REST")
+    if st.button("RUN ENRICHMENT") and f_main:
+        m_df = universal_file_reader(f_main)
+        i_df = universal_file_reader(f_inv)
+        r_df = universal_file_reader(f_rest)
         
         if m_df is not None:
             inv_lookup = build_inventory_lookup(i_df)
-            rest_set = build_restrictions_set(r_df)
-            
-            res_df, stats = enrich_main(m_df, inv_lookup, rest_set)
-            st.session_state["res"] = res_df
-            st.session_state["stats"] = stats
-            append_history(res_df, stats)
-            st.success("Enrichment Complete!")
-            st.dataframe(res_df.head(100))
-            
-            # Download
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                res_df.to_excel(writer, index=False)
-            st.download_button("⬇ Download Result", output.getvalue(), "enriched.xlsx")
+            # Build restrictions set
+            r_brands = set()
+            if r_df is not None:
+                rm = auto_map_columns(r_df)
+                r_col = rm.get('brand') or r_df.columns[0]
+                r_brands = {str(x).strip().lower() for x in r_df[r_col].dropna() if clean_value(x)}
 
-with tab_history:
-    h_df = load_history()
-    if h_df is not None:
-        hc1, hc2 = st.columns(2)
-        # Safe sum checks to prevent KeyError
-        rp = h_df['rows_processed'].sum() if 'rows_processed' in h_df.columns else 0
-        sf = h_df['stock_filled'].sum() if 'stock_filled' in h_df.columns else 0
+            res_df, stats = enrich_main(m_df, inv_lookup, r_brands)
+            append_history(res_df, stats)
+            
+            st.success(f"Processed {len(res_df)} rows. Found {stats['stock_filled']} matches.")
+            st.dataframe(res_df.head(50))
+            
+            # Export
+            towrite = io.BytesIO()
+            res_df.to_excel(towrite, index=False, engine='xlsxwriter')
+            st.download_button("Download Results", towrite.getvalue(), "enriched_data.xlsx")
+
+with tab2:
+    if os.path.exists(HISTORY_FILE):
+        h_df = pd.read_csv(HISTORY_FILE)
+        # Safety checks for metrics to prevent KeyError
+        total_rows = h_df['rows_processed'].sum() if 'rows_processed' in h_df.columns else 0
+        total_matches = h_df['stock_filled'].sum() if 'stock_filled' in h_df.columns else 0
         
-        hc1.metric("Total Rows", f"{rp:,}")
-        hc2.metric("Stock Matches", f"{sf:,}")
-        st.dataframe(h_df)
+        c1, c2 = st.columns(2)
+        c1.metric("Total Rows Processed", f"{total_rows:,}")
+        c2.metric("Total Stock Matches", f"{total_matches:,}")
+        st.dataframe(h_df.sort_values("timestamp", ascending=False))
     else:
-        st.info("No history yet.")
+        st.info("No history found.")
