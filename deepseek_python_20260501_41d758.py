@@ -1,8 +1,6 @@
+# VirVentures FBA Enrichment Engine
+# Production-grade inventory enrichment tool for Amazon FBA resellers.
 
-"""
-VirVentures FBA Enrichment Engine
-Production-grade inventory enrichment tool for Amazon FBA resellers.
-"""
 
 import streamlit as st
 import pandas as pd
