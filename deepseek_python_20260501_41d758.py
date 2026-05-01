@@ -1,421 +1,485 @@
 import streamlit as st
 import pandas as pd
 import io
+import re
 from datetime import datetime
 
-# =============================================================================
-# PAGE CONFIG
-# =============================================================================
 st.set_page_config(
-    page_title="VirVentures Data Enricher",
+    page_title="VirVentures 4-File Enricher",
     page_icon="📦",
     layout="wide",
 )
 
-# =============================================================================
-# SIMPLE CLEAN CSS (No Conflicts)
-# =============================================================================
 st.markdown("""
 <style>
-/* Main container */
-.main {
-    padding: 0 1rem;
-}
-
-/* Headers */
-h1, h2, h3 {
-    color: #1e2d4e;
-}
-
-/* Custom buttons */
-.stButton button {
-    background-color: #f47920;
-    color: white;
-    font-weight: bold;
-    border-radius: 8px;
-    border: none;
-}
-
-.stButton button:hover {
-    background-color: #e06810;
-    color: white;
-}
-
-/* Download buttons */
-.stDownloadButton button {
-    background-color: white;
-    color: #f47920;
-    border: 2px solid #f47920;
-    border-radius: 8px;
-    font-weight: bold;
-}
-
-/* Metrics */
-.metric-card {
-    background-color: #f8f9fa;
-    border-radius: 12px;
-    padding: 16px;
-    text-align: center;
-    border: 1px solid #e9ecef;
-}
-
-/* Info box */
-.info-box {
-    background-color: #e8f4fd;
-    border-left: 4px solid #f47920;
-    border-radius: 8px;
-    padding: 16px;
-    margin: 16px 0;
-}
-
-.success-box {
-    background-color: #d4edda;
-    border-left: 4px solid #28a745;
-    border-radius: 8px;
-    padding: 16px;
-    margin: 16px 0;
-}
+.main { padding: 0 1rem; }
+h1, h2, h3 { color: #1e2d4e; }
+.stButton button { background-color: #f47920; color: white; font-weight: bold; border-radius: 8px; border: none; }
+.stButton button:hover { background-color: #e06810; }
+.stDownloadButton button { background-color: white; color: #f47920; border: 2px solid #f47920; border-radius: 8px; }
+.info-box { background-color: #e8f4fd; border-left: 4px solid #f47920; border-radius: 8px; padding: 16px; margin: 16px 0; }
+.success-box { background-color: #d4edda; border-left: 4px solid #28a745; border-radius: 8px; padding: 16px; margin: 16px 0; }
+.warning-box { background-color: #fff3cd; border-left: 4px solid #ffc107; border-radius: 8px; padding: 16px; margin: 16px 0; }
+.file-card { border: 1px solid #e0e0e0; border-radius: 10px; padding: 12px; margin: 8px 0; background-color: #fafafa; }
+.fill-column { background-color: #d4edda; padding: 2px 6px; border-radius: 4px; font-family: monospace; }
 </style>
 """, unsafe_allow_html=True)
 
-# =============================================================================
-# HEADER
-# =============================================================================
-st.title("🏢 VirVentures DataOps Platform")
-st.caption("Enterprise Data Enrichment System | From 60 minutes to 60 seconds")
-
-st.markdown("---")
+st.title("📦 VirVentures 4-File Inventory Enricher")
+st.caption("Auto-fill Inventory, Stock, Sales, and Restrictions from 4 source files")
 
 # =============================================================================
-# SIDEBAR
+# SESSION STATE
 # =============================================================================
-with st.sidebar:
-    st.markdown("## 🏢 VirVentures")
-    st.markdown("---")
-    
-    menu = st.radio("Navigation", ["📦 Data Enrichment", "📊 Analytics", "📋 History", "🎓 Help"])
-    
-    st.markdown("---")
-    st.caption(f"📅 {datetime.now().strftime('%B %d, %Y')}")
-    st.caption("⚡ Version 2.0")
-    st.caption("© 2025 VirVentures")
+if 'enriched_df' not in st.session_state:
+    st.session_state.enriched_df = None
+if 'enriched_filename' not in st.session_state:
+    st.session_state.enriched_filename = None
 
 # =============================================================================
-# DATA ENRICHMENT TAB
+# HELPER FUNCTIONS
 # =============================================================================
-if menu == "📦 Data Enrichment":
+def clean_value(val):
+    """Clean and return value, handle NaN/None/#N/A/NA"""
+    if pd.isna(val):
+        return None
+    val_str = str(val).strip()
+    if val_str in ['#N/A', 'N/A', 'NA', 'na', 'n/a', '', 'NaN', 'nan', 'None']:
+        return None
+    return val_str
+
+def extract_sku_from_main(row):
+    """Extract SKU from main file - looks for first non-empty column that looks like SKU"""
+    # Your main file has SKUs in INV(A-Z) column and also in first column
+    for col in ['INV(A-Z)', 'INV(Z-A)', 'input_Model#', 'Output ASIN']:
+        if col in row.index:
+            val = clean_value(row[col])
+            if val and len(val) > 3:
+                return val
+    return None
+
+def extract_asin_from_main(row):
+    """Extract ASIN from main file"""
+    for col in ['Output ASIN', 'ASIN', 'asin', 'input_ASIN']:
+        if col in row.index:
+            val = clean_value(row[col])
+            if val and val.startswith('B') and len(val) == 10:
+                return val
+    return None
+
+# =============================================================================
+# ENRICHMENT FUNCTIONS FOR EACH SOURCE FILE
+# =============================================================================
+
+def enrich_from_inventory_file(main_df, inv_df):
+    """
+    Enrich from Inventory File (File 2)
+    Maps: SKU/ASIN → Stock, Reserve, Inbound, Sales data
+    """
+    filled_cols = []
+    cells_filled = 0
     
-    st.markdown("""
-    <div class="info-box">
-        <b>✨ Welcome to DataOps Platform</b><br>
-        Upload your main file and multiple lookup files. The system will automatically match and fill all empty columns.
-    </div>
-    """, unsafe_allow_html=True)
+    # Clean inventory file - standardize columns
+    inv_df.columns = inv_df.columns.str.upper().str.strip()
     
-    col1, col2 = st.columns(2)
+    # Create mapping dictionaries for different key types
+    sku_to_data = {}
+    asin_to_data = {}
     
-    with col1:
-        st.subheader("📂 Main File")
-        st.caption("Your vendor file with empty columns")
-        
-        main_file = st.file_uploader(
-            "Upload Main Excel File",
-            type=["xlsx", "xls", "csv"],
-            key="main_file"
-        )
-        
-        if main_file:
-            # Read file
-            if main_file.name.endswith('.csv'):
-                main_df = pd.read_csv(main_file)
-            else:
-                main_df = pd.read_excel(main_file, dtype=str)
-            
-            main_df.columns = main_df.columns.str.strip()
-            
-            # Detect key column
-            key_options = ['ASIN', 'asin', 'input_ASIN', 'UPC', 'upc', 'SKU', 'sku']
-            detected_key = None
-            for col in key_options:
-                if col in main_df.columns:
-                    detected_key = col
+    for _, row in inv_df.iterrows():
+        # Get SKU
+        sku = None
+        for col in ['SKU', 'SKU(A-Z)', 'SKU(Z-A)']:
+            if col in inv_df.columns:
+                sku = clean_value(row[col])
+                if sku:
                     break
-            
-            if not detected_key:
-                detected_key = main_df.columns[0]
-            
-            # Show stats
-            empty_cols = 0
-            for col in main_df.columns:
-                if main_df[col].isna().all() or (main_df[col].astype(str).str.strip() == "").all():
-                    empty_cols += 1
-            
-            col_a, col_b, col_c = st.columns(3)
-            col_a.metric("📊 Rows", len(main_df))
-            col_b.metric("📝 Columns", len(main_df.columns))
-            col_c.metric("⚠️ Empty Columns", empty_cols)
-            
-            with st.expander("Preview Main File"):
-                st.dataframe(main_df.head(10), use_container_width=True)
-    
-    with col2:
-        st.subheader("📂 Lookup Files")
-        st.caption("Department files (Inventory, Brand, Restrictions, etc.)")
         
-        num_files = st.number_input("Number of lookup files", min_value=1, max_value=10, value=3)
+        # Get ASIN
+        asin = None
+        for col in ['ASIN', 'ASIN(A-Z)', 'ASIN(Z-A)']:
+            if col in inv_df.columns:
+                asin = clean_value(row[col])
+                if asin:
+                    break
         
-        lookup_files = []
-        for i in range(num_files):
-            col_a, col_b = st.columns([3, 1])
-            with col_a:
-                lf = st.file_uploader(
-                    f"File {i+1}",
-                    type=["xlsx", "xls", "csv"],
-                    key=f"lookup_{i}",
-                    label_visibility="collapsed"
-                )
-            with col_b:
-                label = st.text_input(
-                    f"Label",
-                    value=f"Source {i+1}",
-                    key=f"label_{i}",
-                    label_visibility="collapsed"
-                )
-            if lf:
-                lookup_files.append({
-                    'file': lf,
-                    'label': label if label else f"Source {i+1}"
-                })
+        # Map data
+        data = {}
+        for col in inv_df.columns:
+            if col not in ['SKU', 'SKU(A-Z)', 'SKU(Z-A)', 'ASIN', 'ASIN(A-Z)', 'ASIN(Z-A)']:
+                data[col] = clean_value(row[col])
+        
+        if sku:
+            sku_to_data[sku] = data
+        if asin:
+            asin_to_data[asin] = data
     
-    # Configuration
-    if main_file and lookup_files:
+    # Columns to fill from inventory file
+    inv_mapping = {
+        'STOCK': ['Stock', 'AFN-FULFILLABLE-QUANTITY', 'STOCK'],
+        'RESERVE': ['Reserve', 'AFN-RESERVED-QUANTITY', 'RESERVE'],
+        'INBOUND': ['Inbound', 'AFN-INBOUND-WORKING-QUANTITY', 'AFN-INBOUND-SHIPPED-QUANTITY', 'INBOUND'],
+        'Net Ordered GMS($)': ['NET ORDERED GMS($)', 'GMS', 'SALES'],
+        'Net Ordered Units': ['NET ORDERED UNITS', 'UNITS', 'UNITS SOLD'],
+        'Lifetime': ['LIFETIME', 'LIFETIME SALES'],
+        'Sales 2023': ['SALES 2023', '2023 SALES', 'YTD'],
+        'Current year': ['CURRENT YEAR', 'CURRENT YEAR SALES'],
+        'Sales 30': ['SALES 30', 'LAST 30 DAYS', '30 DAYS'],
+        'Sales 3': ['SALES 3', 'LAST 3 MONTHS', '90 DAYS'],
+        'Sales 1': ['SALES 1', 'LAST 1 MONTH'],
+        'FBM-LIFETIME': ['FBM-LIFETIME', 'FBM LIFETIME'],
+        'FBM-LAST YEAR': ['FBM-LAST YEAR', 'FBM LAST YEAR'],
+        'FBM-CURRENT YEAR': ['FBM-CURRENT YEAR', 'FBM CURRENT YEAR'],
+    }
+    
+    # Fill each row
+    for idx, row in main_df.iterrows():
+        sku = extract_sku_from_main(row)
+        asin = extract_asin_from_main(row)
+        
+        data = None
+        if sku and sku in sku_to_data:
+            data = sku_to_data[sku]
+        elif asin and asin in asin_to_data:
+            data = asin_to_data[asin]
+        
+        if data:
+            for target_col, source_patterns in inv_mapping.items():
+                if target_col in main_df.columns:
+                    current_val = clean_value(row[target_col])
+                    if current_val is None or current_val == '0' or current_val == '0.0':
+                        for source_pattern in source_patterns:
+                            for inv_col in inv_df.columns:
+                                if source_pattern in inv_col and inv_col in data:
+                                    val = data[inv_col]
+                                    if val and val not in [0, '0', '0.0', None]:
+                                        main_df.at[idx, target_col] = val
+                                        cells_filled += 1
+                                        if target_col not in filled_cols:
+                                            filled_cols.append(target_col)
+                                        break
+                            if main_df.at[idx, target_col] != row[target_col]:
+                                break
+    
+    return main_df, filled_cols, cells_filled
+
+def enrich_from_restrictions_file(main_df, restrictions_df):
+    """
+    Enrich from Restrictions File (File 3)
+    Checks if brand is restricted
+    """
+    filled_cols = []
+    cells_filled = 0
+    
+    # Build restricted brands list
+    restricted_brands = set()
+    brand_restriction_details = {}
+    
+    for col in restrictions_df.columns:
+        for val in restrictions_df[col].dropna():
+            val_str = str(val).strip().lower()
+            if len(val_str) > 2:
+                restricted_brands.add(val_str)
+                brand_restriction_details[val_str] = val_str
+    
+    # Columns to update
+    restriction_columns = ['Restricted', 'Listing Status', 'SKU Status(A-Z)', 'SKU Status(Z-A)']
+    
+    for idx, row in main_df.iterrows():
+        # Get brand name
+        brand_col = None
+        for col in ['Brand', 'brand']:
+            if col in main_df.columns:
+                brand_col = col
+                break
+        
+        if brand_col:
+            brand_val = clean_value(row[brand_col])
+            if brand_val:
+                brand_lower = str(brand_val).lower()
+                
+                if brand_lower in restricted_brands:
+                    for col in restriction_columns:
+                        if col in main_df.columns:
+                            if clean_value(row[col]) is None or clean_value(row[col]) == 'NA':
+                                main_df.at[idx, col] = 'RESTRICTED - MANUAL REVIEW'
+                                cells_filled += 1
+                                if col not in filled_cols:
+                                    filled_cols.append(col)
+    
+    return main_df, filled_cols, cells_filled
+
+def enrich_from_archive_file(main_df, archive_df):
+    """
+    Enrich from Archive Inventory File (File 4)
+    Gets historical ASIN data, Total, Fulfillable quantities
+    """
+    filled_cols = []
+    cells_filled = 0
+    
+    archive_df.columns = archive_df.columns.str.upper().str.strip()
+    
+    # Create ASIN to data mapping
+    asin_to_data = {}
+    for _, row in archive_df.iterrows():
+        asin = None
+        for col in ['ASIN', 'ASIN(A-Z)', 'ASIN(Z-A)']:
+            if col in archive_df.columns:
+                asin = clean_value(row[col])
+                if asin:
+                    break
+        
+        if asin:
+            data = {}
+            for col in archive_df.columns:
+                if col not in ['ASIN', 'ASIN(A-Z)', 'ASIN(Z-A)', 'SKU', 'SKU(A-Z)', 'SKU(Z-A)']:
+                    data[col] = clean_value(row[col])
+            asin_to_data[asin] = data
+    
+    # Column mappings from archive to main
+    archive_mapping = {
+        'TOTAL(Stock+Reserve+inbound)': ['TOTAL', 'TOTAL QUANTITY'],
+        'INV(A-Z)': ['INV(A-Z)', 'SKU'],
+        'INV(Z-A)': ['INV(Z-A)', 'SKU'],
+        'Ageing': ['AGEING', 'AGE'],
+        'Return': ['RETURN', 'RETURN RATE'],
+    }
+    
+    for idx, row in main_df.iterrows():
+        asin = extract_asin_from_main(row)
+        
+        if asin and asin in asin_to_data:
+            data = asin_to_data[asin]
+            
+            for target_col, source_patterns in archive_mapping.items():
+                if target_col in main_df.columns:
+                    current_val = clean_value(row[target_col])
+                    if current_val is None or current_val == '0' or current_val == '0.0' or current_val == 'NA':
+                        for source_pattern in source_patterns:
+                            for arch_col in archive_df.columns:
+                                if source_pattern in arch_col and arch_col in data:
+                                    val = data[arch_col]
+                                    if val and val not in [0, '0', '0.0', None, 'NA', '#N/A']:
+                                        main_df.at[idx, target_col] = val
+                                        cells_filled += 1
+                                        if target_col not in filled_cols:
+                                            filled_cols.append(target_col)
+                                        break
+                            if main_df.at[idx, target_col] != row[target_col]:
+                                break
+    
+    return main_df, filled_cols, cells_filled
+
+def calculate_derived_columns(main_df):
+    """Calculate derived columns like TOTAL and Days of stock"""
+    
+    # Calculate TOTAL(Stock+Reserve+inbound)
+    if 'Stock' in main_df.columns and 'Reserve' in main_df.columns and 'Inbound' in main_df.columns:
+        total_col = 'TOTAL(Stock+Reserve+inbound)'
+        if total_col in main_df.columns:
+            for idx, row in main_df.iterrows():
+                stock = clean_value(row['Stock'])
+                reserve = clean_value(row['Reserve'])
+                inbound = clean_value(row['Inbound'])
+                
+                stock_val = float(stock) if stock and stock != '0' else 0
+                reserve_val = float(reserve) if reserve and reserve != '0' else 0
+                inbound_val = float(inbound) if inbound and inbound != '0' else 0
+                
+                total = stock_val + reserve_val + inbound_val
+                if total > 0:
+                    main_df.at[idx, total_col] = total
+    
+    # Calculate Days of stock(30) based on Sales 30
+    if 'Days of stock(30)' in main_df.columns and 'Stock' in main_df.columns and 'Sales 30' in main_df.columns:
+        for idx, row in main_df.iterrows():
+            stock = clean_value(row['Stock'])
+            sales_30 = clean_value(row['Sales 30'])
+            
+            stock_val = float(stock) if stock and stock != '0' else 0
+            sales_val = float(sales_30) if sales_30 and sales_30 != '0' else 0
+            
+            if sales_val > 0:
+                days = round((stock_val / sales_val) * 30, 1)
+                main_df.at[idx, 'Days of stock(30)'] = days
+    
+    # Calculate Days of stock(3) based on Sales 3
+    if 'Days of stock(3)' in main_df.columns and 'Stock' in main_df.columns and 'Sales 3' in main_df.columns:
+        for idx, row in main_df.iterrows():
+            stock = clean_value(row['Stock'])
+            sales_3 = clean_value(row['Sales 3'])
+            
+            stock_val = float(stock) if stock and stock != '0' else 0
+            sales_val = float(sales_3) if sales_3 and sales_3 != '0' else 0
+            
+            if sales_val > 0:
+                days = round((stock_val / sales_val) * 90, 1)
+                main_df.at[idx, 'Days of stock(3)'] = days
+    
+    return main_df
+
+# =============================================================================
+# UI - FILE UPLOADS
+# =============================================================================
+
+# File 1: Main File
+st.markdown("---")
+st.subheader("📁 STEP 1: Upload Your Main File")
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.markdown("### 📄 FILE 1")
+    st.caption("Your Vendor File")
+    main_file = st.file_uploader("Main Excel File", type=["xlsx", "xls", "csv"], key="main")
+
+with col2:
+    st.markdown("### 📊 FILE 2")
+    st.caption("Inventory File (Stock, Sales)")
+    inv_file = st.file_uploader("Inventory Excel File", type=["xlsx", "xls", "csv"], key="inv")
+
+with col3:
+    st.markdown("### 🚫 FILE 3")
+    st.caption("Restrictions File (Brand Blocklist)")
+    restrict_file = st.file_uploader("Restrictions Excel File", type=["xlsx", "xls", "csv"], key="restrict")
+
+with col4:
+    st.markdown("### 📚 FILE 4")
+    st.caption("Archive Inventory File")
+    archive_file = st.file_uploader("Archive Excel File", type=["xlsx", "xls", "csv"], key="archive")
+
+if main_file:
+    # Load main file
+    if main_file.name.endswith('.csv'):
+        main_df = pd.read_csv(main_file)
+    else:
+        main_df = pd.read_excel(main_file, dtype=str)
+    main_df.columns = main_df.columns.str.strip()
+    
+    st.success(f"✅ Main file loaded: {len(main_df)} rows, {len(main_df.columns)} columns")
+    
+    # Show empty columns preview
+    empty_cols = []
+    for col in main_df.columns:
+        na_count = main_df[col].isna().sum()
+        zero_count = (main_df[col].astype(str).str.strip() == '0').sum()
+        na_count += (main_df[col].astype(str).str.strip() == '#N/A').sum()
+        na_count += (main_df[col].astype(str).str.strip() == 'NA').sum()
+        
+        if na_count > len(main_df) * 0.5 or zero_count > len(main_df) * 0.5:
+            empty_cols.append(col)
+    
+    if empty_cols:
+        st.info(f"📝 Found {len(empty_cols)} columns that need filling")
+        with st.expander("View columns to be filled"):
+            st.write(empty_cols[:30])
+    
+    # ENRICH BUTTON
+    if inv_file or restrict_file or archive_file:
         st.markdown("---")
-        st.subheader("⚙️ Configuration")
-        
-        match_col = st.selectbox(
-            "🔗 Matching Column",
-            options=main_df.columns.tolist(),
-            index=main_df.columns.tolist().index(detected_key) if detected_key in main_df.columns else 0,
-            help="This column must exist in ALL files (e.g., ASIN, UPC, SKU)"
-        )
-        
-        fill_strategy = st.radio(
-            "📌 Fill Strategy",
-            ["Only fill EMPTY cells (recommended)", "Overwrite ALL cells"],
-            horizontal=True
-        )
-        
         if st.button("🚀 START ENRICHMENT", use_container_width=True):
-            # Initialize
             enriched_df = main_df.copy()
-            results = []
-            all_filled_cols = []
+            all_results = []
             total_cells = 0
+            all_filled_cols = []
             
             progress = st.progress(0)
             status = st.empty()
+            step = 0
+            total_steps = sum([1 for f in [inv_file, restrict_file, archive_file] if f])
             
-            for idx, lf in enumerate(lookup_files):
-                status.info(f"Processing: {lf['label']}...")
+            # Step 1: Inventory File
+            if inv_file:
+                status.info("📊 Processing Inventory File (Stock, Sales, Reserve, Inbound)...")
+                if inv_file.name.endswith('.csv'):
+                    inv_df = pd.read_csv(inv_file)
+                else:
+                    inv_df = pd.read_excel(inv_file, dtype=str)
                 
-                try:
-                    # Read lookup file
-                    if lf['file'].name.endswith('.csv'):
-                        lookup_df = pd.read_csv(lf['file'])
-                    else:
-                        lookup_df = pd.read_excel(lf['file'], dtype=str)
-                    
-                    lookup_df.columns = lookup_df.columns.str.strip()
-                    
-                    # Check match column exists
-                    if match_col not in lookup_df.columns:
-                        st.warning(f"⚠️ '{lf['label']}' missing column '{match_col}'. Skipping...")
-                        continue
-                    
-                    # Convert to string for matching
-                    enriched_df[match_col] = enriched_df[match_col].astype(str).str.strip()
-                    lookup_df[match_col] = lookup_df[match_col].astype(str).str.strip()
-                    
-                    filled_in_file = []
-                    cells_in_file = 0
-                    
-                    for col in lookup_df.columns:
-                        if col == match_col:
-                            continue
-                        
-                        # Check if needs fill
-                        if fill_strategy == "Only fill EMPTY cells (recommended)":
-                            if col in enriched_df.columns:
-                                is_empty = enriched_df[col].isna().all() or (enriched_df[col].astype(str).str.strip() == "").all()
-                                if not is_empty:
-                                    continue
-                        
-                        # Create lookup dict and fill
-                        lookup_dict = dict(zip(lookup_df[match_col], lookup_df[col]))
-                        
-                        for row_idx, row in enriched_df.iterrows():
-                            key = row[match_col]
-                            if key in lookup_dict and pd.notna(lookup_dict[key]):
-                                if col not in enriched_df.columns:
-                                    enriched_df[col] = None
-                                
-                                current = enriched_df.at[row_idx, col] if col in enriched_df.columns else None
-                                
-                                if fill_strategy == "Only fill EMPTY cells (recommended)":
-                                    if pd.notna(current) and str(current).strip() != "":
-                                        continue
-                                
-                                enriched_df.at[row_idx, col] = lookup_dict[key]
-                                cells_in_file += 1
-                        
-                        filled_in_file.append(col)
-                    
-                    results.append({
-                        'name': lf['label'],
-                        'cols': len(filled_in_file),
-                        'cells': cells_in_file
-                    })
-                    
-                    all_filled_cols.extend(filled_in_file)
-                    total_cells += cells_in_file
-                    
-                except Exception as e:
-                    st.error(f"Error processing {lf['label']}: {str(e)}")
+                enriched_df, filled_cols, cells = enrich_from_inventory_file(enriched_df, inv_df)
+                all_results.append({"file": "Inventory File", "cols": len(filled_cols), "cells": cells})
+                total_cells += cells
+                all_filled_cols.extend(filled_cols)
+                step += 1
+                progress.progress(step / total_steps)
+            
+            # Step 2: Restrictions File
+            if restrict_file:
+                status.info("🚫 Processing Restrictions File (Brand Blocklist)...")
+                if restrict_file.name.endswith('.csv'):
+                    restrict_df = pd.read_csv(restrict_file)
+                else:
+                    restrict_df = pd.read_excel(restrict_file, dtype=str)
                 
-                progress.progress((idx + 1) / len(lookup_files))
+                enriched_df, filled_cols, cells = enrich_from_restrictions_file(enriched_df, restrict_df)
+                all_results.append({"file": "Restrictions File", "cols": len(filled_cols), "cells": cells})
+                total_cells += cells
+                all_filled_cols.extend(filled_cols)
+                step += 1
+                progress.progress(step / total_steps)
+            
+            # Step 3: Archive File
+            if archive_file:
+                status.info("📚 Processing Archive File (Historical Data)...")
+                if archive_file.name.endswith('.csv'):
+                    archive_df = pd.read_csv(archive_file)
+                else:
+                    archive_df = pd.read_excel(archive_file, dtype=str)
+                
+                enriched_df, filled_cols, cells = enrich_from_archive_file(enriched_df, archive_df)
+                all_results.append({"file": "Archive File", "cols": len(filled_cols), "cells": cells})
+                total_cells += cells
+                all_filled_cols.extend(filled_cols)
+                step += 1
+                progress.progress(step / total_steps)
+            
+            # Step 4: Calculate derived columns
+            status.info("🧮 Calculating derived columns (TOTAL, Days of stock)...")
+            enriched_df = calculate_derived_columns(enriched_df)
             
             progress.progress(1.0)
             status.success("✅ Enrichment Complete!")
             
-            # Save to session
+            # Store results
             st.session_state.enriched_df = enriched_df
-            
             timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
             original_name = main_file.name.replace('.xlsx', '').replace('.xls', '').replace('.csv', '')
             st.session_state.enriched_filename = f"{original_name}_Enriched_{timestamp}.xlsx"
             
             # Show results
-            st.markdown("---")
-            st.subheader("📊 Results")
+            st.markdown('<div class="success-box">✅ <b>Enrichment Complete!</b></div>', unsafe_allow_html=True)
             
             col_r1, col_r2, col_r3, col_r4 = st.columns(4)
             col_r1.metric("Rows Processed", len(enriched_df))
-            col_r2.metric("Files Merged", len(results))
+            col_r2.metric("Files Processed", len(all_results))
             col_r3.metric("Columns Filled", len(set(all_filled_cols)))
-            col_r4.metric("Cells Filled", f"{total_cells:,}")
+            col_r4.metric("Cells Updated", f"{total_cells:,}")
             
-            for r in results:
-                st.markdown(f"• **{r['name']}**: {r['cols']} columns, {r['cells']} cells filled")
+            for res in all_results:
+                st.markdown(f"• **{res['file']}**: {res['cols']} columns, {res['cells']} cells filled")
             
-            if all_filled_cols:
-                st.markdown("### Preview")
-                preview_cols = [match_col] + list(set(all_filled_cols))[:5]
-                preview_cols = [c for c in preview_cols if c in enriched_df.columns]
+            # Preview showing before/after
+            st.markdown("### Preview (First 10 rows of filled columns)")
+            preview_cols = [c for c in ['Output ASIN', 'INV(A-Z)', 'Stock', 'Reserve', 'Inbound', 'TOTAL(Stock+Reserve+inbound)', 'Restricted', 'Sales 30', 'Days of stock(30)'] if c in enriched_df.columns]
+            if preview_cols:
                 st.dataframe(enriched_df[preview_cols].head(10), use_container_width=True)
-    
-    # Download
-    if st.session_state.get('enriched_df') is not None:
-        st.markdown("---")
-        st.subheader("⬇️ Download Enriched File")
-        
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            st.session_state.enriched_df.to_excel(writer, index=False, sheet_name='Enriched_Data')
-        
-        st.download_button(
-            label="📥 Download Excel File",
-            data=output.getvalue(),
-            file_name=st.session_state.enriched_filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
 
-# =============================================================================
-# ANALYTICS TAB
-# =============================================================================
-elif menu == "📊 Analytics":
-    st.subheader("📊 Analytics Dashboard")
+# Download section
+if st.session_state.enriched_df is not None:
+    st.markdown("---")
+    st.subheader("⬇️ Download Enriched File")
     
-    if 'processing_history' not in st.session_state:
-        st.session_state.processing_history = []
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        st.session_state.enriched_df.to_excel(writer, index=False, sheet_name='Enriched_Data')
     
-    if st.session_state.processing_history:
-        df = pd.DataFrame(st.session_state.processing_history)
-        
-        a1, a2, a3, a4 = st.columns(4)
-        a1.metric("Total Runs", len(df))
-        a2.metric("Total Rows", f"{df['rows'].sum():,}")
-        a3.metric("Total Cells", f"{df['cells'].sum():,}")
-        a4.metric("Time Saved", f"~{len(df) * 60} min")
-        
-        st.markdown("### Recent Activity")
-        st.dataframe(df[['timestamp', 'file', 'rows', 'columns_filled', 'cells']].head(20), use_container_width=True)
-    else:
-        st.info("No analytics yet. Run some enrichments to see data.")
+    st.download_button(
+        label="📥 Download Complete Excel File",
+        data=output.getvalue(),
+        file_name=st.session_state.enriched_filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
 
-# =============================================================================
-# HISTORY TAB
-# =============================================================================
-elif menu == "📋 History":
-    st.subheader("📋 Processing History")
-    
-    if 'processing_history' not in st.session_state:
-        st.session_state.processing_history = []
-    
-    if st.session_state.processing_history:
-        for item in st.session_state.processing_history[:30]:
-            st.markdown(f"""
-            ### 📁 {item['file']}
-            - 🕐 {item['timestamp']}
-            - 📊 {item['rows']} rows processed
-            - 📝 {item['columns_filled']} columns filled
-            - 🔢 {item['cells']} cells updated
-            """)
-            st.markdown("---")
-    else:
-        st.info("No history yet. Run your first enrichment to see it here.")
-
-# =============================================================================
-# HELP TAB
-# =============================================================================
-elif menu == "🎓 Help":
-    st.subheader("🎓 Help & Documentation")
-    
-    with st.expander("📖 How to Use", expanded=True):
-        st.markdown("""
-        **Step-by-Step Guide:**
-        
-        1. **Upload Main File** - Your vendor file with empty columns
-        2. **Upload Lookup Files** - Department files (Inventory, Brand, Restrictions)
-        3. **Select Matching Column** - Usually ASIN, UPC, or SKU
-        4. **Choose Fill Strategy** - "Only fill EMPTY cells" is recommended
-        5. **Click Start Enrichment** - Let the system work
-        6. **Download** - Get your complete enriched file
-        """)
-    
-    with st.expander("❓ FAQ"):
-        st.markdown("""
-        **Q: What file formats are supported?**  
-        A: Excel (.xlsx, .xls) and CSV files.
-        
-        **Q: How many lookup files can I upload?**  
-        A: Up to 10 files per session.
-        
-        **Q: Does it handle large files?**  
-        A: Yes, optimized for files up to 100MB.
-        """)
-    
-    with st.expander("⚡ Productivity Gains"):
-        st.markdown("""
-        | Metric | Before | After |
-        |--------|--------|-------|
-        | Time per enrichment | 60 min | 1 min |
-        | Error rate | 5-10% | <0.1% |
-        | Daily output | 1 file | 10+ files |
-        """)
-
-# =============================================================================
-# FOOTER
-# =============================================================================
+# Footer
 st.markdown("---")
-st.caption("⚡ VirVentures DataOps Platform | From 60 minutes to 60 seconds")
+st.caption("⚡ VirVentures 4-File Enricher | Auto-fills Inventory, Stock, Sales, and Restrictions from 4 source files")
